@@ -1,8 +1,8 @@
 # Challenger 300 MCP panel parts		
 
-Make two assemblies, mirror images of each other for Pilot (left) and Co-Pilot/FO (right). Parts list is for one panel.
+Parts list is for one panel. Make two assemblies, mirror images of each other for Pilot (left) and Co-Pilot/FO (right).
 
-Choose lasercut parts or 3D printed part.
+Choose lasercut parts _or_ 3D printed part.
 
 Lasercut panel assembly (from `mcp.dxf`)
 |Qty | Description | Notes |
@@ -19,7 +19,7 @@ or
 3D printed panel assembly (from `mcp.stl`, created by `mcp.scad`)
 |Qty | Description | Notes |
 | --- | --- | --- |
-| 1 | 3D printed panel | Print `mcp.stl` |
+| 1 | 3D printed panel | Print `mcp.stl`. Mirror STL file for other side. |
 | 2 | M3x8 self-tapping screw| Hold perf board mount. |
 
 
@@ -37,7 +37,7 @@ Common components
 | 1 | 33mm square arcade button, white |
 | 1 | LED holder | Print from `mcp_LED_holder.stl`, cold white. |
 | 1 | LED baffle | Print from `mcp_LED_baffle.stl`, black. |
-| 2 | Opal acrylic 19x8.9x3mm | 3.2mm, or 1/8” material ok. Cut from `mcp_acrylic_insert.dxf` |
+| 2 | Opal acrylic 19x8.9x3mm | 3.2mm, or 1/8” material ok. Lasercut from `mcp_acrylic_insert.dxf` |
 | 3 | Decal | Laser etch or print `mcp_decal.dxf` on laser transparency film and cut to 21.4x21.4mm. |
 | 1 | Filter | Cut 21.4x21.4 mm square of 20% window tinting film. |
 | 1	| KF2510 receptacle, 4-way | For LEDs connection. |
