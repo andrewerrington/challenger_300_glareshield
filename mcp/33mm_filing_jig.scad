@@ -1,0 +1,11 @@
+difference(){
+  union(){
+cylinder(d=19.2,h=12,$fn=60);
+translate([-25.4/2,-25.4/2,2])
+cube([25.4,25.4,5.5]);
+translate([-29/2,-29/2,0])
+cube([29,29,2]);
+  }
+  translate([0,10,0])
+  cylinder(d=3,h=0.8,$fn=20);
+}
