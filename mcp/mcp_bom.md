@@ -9,7 +9,7 @@ Lasercut panel assembly (from `mcp.dxf`)
 | --- | --- | --- | --- |
 | 1	| Panel cut from 1.5mm (1/16”) acrylic | 1.5mm, 1.6mm or 1/16” material ok. Use _panel_, _panel_cut_, and _fasteners_panel_ layers.|
 | 1	| Intermediate fascia piece cut from 3mm (1/8”) MDF | 3mm, 3.2mm, or 1/8” material ok. Use _fascia_outline_, _fascia_cut_, and _fasteners_fascia_ layers. |
-| 1 | Top fascia piece cut from 3mm (1/8”) MDF | 3mm, 3.2mm, or 1/8” material ok. Use _fascia_outline_ and _fascia_cut layers_. |
+| 1 | Top fascia piece cut from 3mm (1/8”) MDF | 3mm, 3.2mm, or 1/8” material ok. Use _fascia_outline_ and _fascia_cut_ layers. |
 | 1 | Switch spacer cut from 1mm acrylic | Use _fascia_cut_ and _panel_cut_ layers to make thin, square spacer/packer. |
 | 2 | M3x6 self-tapping screw | Attach panel to fascia. | https://www.aliexpress.com/item/1005003414944213.html
 | 2 | M3x8 self-tapping screw | Hold perf board mount. | https://www.aliexpress.com/item/1005003414944213.html
