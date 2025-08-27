@@ -1,45 +1,36 @@
 /*
-   Challenger 300 Glare Shield
-   
-   This file is part of the Challenger 300 cockpit project
+   Challenger 300 Glare Shield devices
+
    Copyright (c) November 2023 A M Errington
-   Copyright (c) August 2024 A M Errington
 
-   This program is free software: you can redistribute it and/or modify  
-   it under the terms of the GNU General Public License as published by  
-   the Free Software Foundation, version 3.
- 
-   This program is distributed in the hope that it will be useful, but 
-   WITHOUT ANY WARRANTY; without even the implied warranty of 
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU 
-   General Public License for more details.
- 
-   You should have received a copy of the GNU General Public License 
-   along with this program. If not, see <http://www.gnu.org/licenses/>.
- 
-   
-   This code is to interface switches and indicators on a Challenger 300
-   glare shield panel to X-Plane 11 running DDEN's Challenger 300 model. We
-   use a Wiznet W5500 Ethernet module to communicate with X-Plane over UDP.
+   v0.2 26 Apr 2025 - Modified for new schematic, which allows A0 to be used.
+   v0.3 16 Jul 2025 - Corrected operation of pitch wheel in VS and PTCH mode.
 
-   In the glare shield panel, from the left (Pilot's side) is a Master Warning/
+   This code is to interface switches and indicators on the Challenger 300
+   glare shield panel to X-Plane. We use a Wiznet W5500 Ethernet module
+   to communicate with X-Plane over UDP.
+
+   In the glare shield, from the left (Pilot's side) is a Master Warning/
    Master Caution indicator and switch.
    Next is the Pilot's Display Control Panel (DCP) which has ten pushbuttons
    and three dual concentric rotary encoders with pushbuttons.
    Next, in the centre is the Flight Guidance Panel (FGP) which has 14
    pushbuttons, five rotary encoders with pushbuttons, a scroll wheel rotary
-   encoder, and a slide switch.
+   encoder, a slide switch.
    Next is the First Officer's DCP, identical to the Pilot's.
-   Finally is the First Officer's Master Caution indicator and switch,
+   Finally, is the First Officer's Master Caution indicator and switch,
    identical to the Pilot's.
 
    The two DCPs and FGP are backlit.
 
-   The total width of the glare shield is approx. 44-3/4" (1140mm)
+   The total width of the glare shield is approx. 44-3/4" (1140mm).
 
    All five panels will have input devices wired in a matrix, with the
    Arduino near the centre. At most, only two switches or rotary encoders
-   will be active at any one time (one by Pilot, one by FO).
+   will be active at any one time (one by Pilot, one by FO). However, some
+   inputs may be held in an active state over time (e.g. some rotary
+   encoders, and the AP/YD DISC switch), therefore all matrix nodes are
+   protected with diodes.
    The matrix must be scanned rapidly to capture rotary encoder changes.
    The matrix will be constructed with six Arduino I/Os for the rows,
    and an MCP23017 I2C GPIO expander for the columns.
@@ -49,15 +40,14 @@
    There are four outputs needed:
    Master Warning, PWM driving a red LED at either end of the glare shield.
    Master Caution, PWM driving a yellow LED at either end of the glare shield.
-   Zone 1 Lighting. PWM driven lighting in the following areas:
+   Zone 1 Lighting. PWM driving lighting in the following areas:
      Pilot glare shield illumination (left)
      Pilot DCP backlight
      Centre FGP backlight
      Compass illumination
-   Zone 3 Lighting. PWM driven lighting in the following areas:
+   Zone 3 Lighting. PWM driving lighting in the following areas:
      FO glare shield illumination (right)
      FO DCP backlight
-
 */
 
 //        1         2         3         4         5         6         7
@@ -75,12 +65,19 @@ byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
 // Alternatively, check the Arduino Ethernet examples to show how to set a
 // fixed IP address in this code.
 
-// Set xplane_ip to the address of your X-Plane PC on the network:
-IPAddress xplane_ip(192, 168, 1, 30); // fixme: Put this in EEPROM
+// This code also listens for the X-Plane multicast beacon to get the
+// IP address of the X-Plane PC. If you can't use the beacon, then set the
+// IP address of your X-Plane PC on the network here, and remove the beacon
+// code.
+
+IPAddress xplane_ip(0,0,0,0); // Overwritten by the beacon address later.
+
+IPAddress BECN_ip(239,255,1,1); // UDP multicast address for X-Plane beacon.
+unsigned int BECN_port = 49707; // X-Plane beacons on this port (was 49000).
 
 unsigned int xplane_port = 49000; // X-Plane listens on this port.
 
-unsigned int localPort = 49094;   // local port to listen on (can be any port)
+unsigned int localPort = 49094; // local port we listen on (can be any port).
 
 // An EthernetUDP instance to let us send and receive packets over UDP.
 EthernetUDP udp;
@@ -98,46 +95,39 @@ char packetBuffer[512];
 MCP23017 mcp = MCP23017(MCP23017_ADDR);
 
 
-// LED outputs. Must be PWM capable for Challenger 300
-const int warning_LED_pin = 3;
+// LED outputs. Must be PWM capable for Challenger 300.
+const int zone1_lighting_pin = 3;
+const int zone3_lighting_pin = 5;
+const int warning_LED_pin = 6;
 const int caution_LED_pin = 9;
-const int zone1_lighting_pin = 5;
-const int zone3_lighting_pin = 6;
 
-// Variable to hold brightness value from sim
+// Variable to hold new brightness value from sim
 int16_t brightness;
 
 
 // Input matrix
 // Rows are on Arduino pins. Columns on MCP23017 port expander.
-uint8_t rows[] = {7, 8, A0, A1, A2, A3};
+uint8_t rows[] = {4, 7, 8, A1, A2, A3};
 
 // An array of ints to make a bit store.
 // We fetch 16-bits from the port expander, even though we only use 14.
 uint16_t cur_matrix[sizeof rows / sizeof rows[0]];
-// We also have an array of old bit-states to detect changes
+// We also have an array of old bit-states to detect changes.
 uint16_t prev_matrix[sizeof rows / sizeof rows[0]];
 
-// For testing we can hook up a button
+
+// For testing we can hook up a button to D2.
 const int test_button_pin = 2;
 bool test_button_pressed = false;
 bool old_test_button_pressed = false;
 bool debug = false;
-
-
-// Analog inputs to set the zone 1 and zone 3 brightness. These are optional
-// as the left and right COCKPIT LIGHTS panels might be handled elsewhere.
-const int zone_1_pot = A6;
-const int zone_3_pot = A7;
-uint16_t pot_value = 0;  // variable to store analog input value
-
 
 // Long interval timer 1s
 unsigned long slow_tick_start_millis;
 unsigned long slow_tick_current_millis;
 const unsigned long slow_tick_period = 1000;
 
-// Short interval timer
+// Short interval timer (currently no tasks)
 unsigned long fast_tick_start_millis;
 unsigned long fast_tick_current_millis;
 const unsigned long fast_tick_period = 100;
@@ -157,8 +147,8 @@ union u_tag {
 // -----------------------------------------------------------------------------
 
 bool getCurBit(uint8_t n) {
-  // Get bit n from the current bit array
-  // Treat the array as 6x16 even though it's really 6x14 because
+  // Get bit n from the current bit array.
+  // Treat the array as 6x16 even though it's really only 6x14 because
   // we aren't using the MSB of the two GPIO ports.
   // Bits are stored in row order 0 to 5, in 16-bit chunks (b << 8 | a)
   // To calculate the bit number for a row/column pair:
@@ -168,12 +158,12 @@ bool getCurBit(uint8_t n) {
 }
 
 bool getPrevBit(uint8_t n) {
-  // Get bit n from the previous bit array (like getCurBit())
+  // Get bit n from the previous bit array (like getCurBit()).
   return (prev_matrix[n / 16] & 1 << (n % 16));
 }
 
 void putPrevBit(uint8_t n, bool v) {
-  // Store bit value v into bit n of the previous bit array
+  // Store bit value v into bit n of the previous bit array.
   if (v){
     // New bit is set, OR it into place
     prev_matrix[n / 16] |= (1 << (n % 16));
@@ -189,6 +179,7 @@ void putPrevBit(uint8_t n, bool v) {
 // Classes for various input devices. Rotary encoder, pushbutton, SPST/SPDT
 // switch, SP3T (with centre position), rotary switch (up to 12 positions).
 // Todo: Add a class for potentiometer input.
+// fixme: remove switch class and potentiometer class. Move them to demo code.
 
 // The matrix is built with Arduino GPIO pins as rows, and MCP23017 GPIO
 // pins as columns. At each intersection is a diode-isolated switch.
@@ -197,7 +188,7 @@ void putPrevBit(uint8_t n, bool v) {
 // is turned.
 // A pushbutton is a single switch that disconnects when it is released, aka
 // a momentary switch.
-// A switch is a switch that stays in place until moved to a new position, i.e.
+// A switch is a switch that stay in place until moved to a new position, i.e.
 // a latching switch.
 // A rotary switch has two or more discrete positions, but only one is active
 // at any time.
@@ -221,11 +212,11 @@ class Encoder4
     uint8_t B;        // bit in matrix for encoder B pin
 
     int16_t intlValue; // internal encoder count
-    int8_t intlDelta;  // internal encoder change
+    //int8_t intlDelta;  // internal encoder change
 
   public:
     int8_t delta;  // External last change in value, -1, 0, +1
-    int16_t value;  // External encoder count
+    //int16_t value;  // External encoder count. Always intlValue/4
     int16_t lastValue; // Last external value
 
     // Constructor - creates a rotary encoder and initializes the member
@@ -237,15 +228,15 @@ class Encoder4
       B = bit_B;
 
       intlValue = 0;
-      value = 0;
+      //value = 0;
       lastValue = 0;
       delta = 0;
-      intlDelta = 0;
+      //intlDelta = 0;
     }
 
     void tick() {
+      int8_t intlDelta;  // internal encoder change
       // Update the encoder state, based on the bits in the input matrix
-
       uint8_t newState = ((getPrevBit(B) << 3) | (getPrevBit(A) << 2) | ((getCurBit(B) << 1) | getCurBit(A)) & 0x0F);
       // newState now contains a 4-bit value that can be used to update the
       // encoder value. We expect the 2-bit inputs to change thus:
@@ -281,11 +272,11 @@ class Encoder4
 
       intlValue += intlDelta;  // Update the internal value
 
-      value = intlValue / 4; // Four states per click
+      //value = intlValue / 4; // Four states per click
 
-      delta = value - lastValue;
+      delta = (intlValue/4) - lastValue;
 
-      lastValue = value;
+      lastValue = intlValue/4;
 
       putPrevBit(B, newState & 0x02);
       putPrevBit(A, newState & 0x01);
@@ -314,7 +305,7 @@ class Encoder2
   public:
     int8_t delta;  // External last change in value, -1, 0, +1
     int16_t value;  // External encoder count
-    int16_t lastValue; // Last external value
+    int16_t lastValue; // Last ezoxternal value
 
     // Constructor - creates a rotary encoder and initializes the member
     // variables and state
@@ -390,7 +381,8 @@ class Button
     // At startup we assume the button is not pressed.
 
     // Class Member Variables
-    uint8_t n;      // bit in matrix for switch. fixme: Can this be a constant?
+  private:
+    const uint8_t n;      // bit in matrix for switch. fixme: Can this be a constant?
     //unsigned long previousMillis;   // use for debouncing later if necessary
 
     // Constructor - creates a button
@@ -398,8 +390,8 @@ class Button
     int8_t delta; // Last change, +1 button became pressed,
     // -1 button became released, 0 no change.
 
-    Button(uint8_t bit_n) {
-      n = bit_n;
+    Button(uint8_t bit_n) : n(bit_n) {
+      //n = bit_n;
       delta = 0;
     }
 
@@ -475,52 +467,57 @@ class SwitchMulti
 };  // class switchMulti
 
 
-// DCP has 3 dual concentric rotary encoders (total 6 encoders)
-// There are two DCPs, Pilot (left) on A matrix, FO (right) on B matrix
-// fixme: DCP encoder bit numbers are incorrect
 
-// Declare Pilot DCP encoders
-/*
-  Encoder dcp_p_tune_outer(0,16,4); // Command xap/DCP/dcp_tune_left_coarse *_right_coarse
-  Encoder dcp_p_tune_inner(1,17,4); // Command xap/DCP/dcp_tune_left_fine *_right_fine
-  Encoder dcp_p_menu(0,16,4);   // Command xap/DCP/dcp_menu_left *_right
-  Encoder dcp_p_data(1,17,4);   // Command xap/DCP/dcp_data_left *_right
-  Encoder dcp_p_tilt(0,16,4);   // Change cl300/dcp_tilt CCW -1 CW +1
-  Encoder dcp_p_range(1,17,4);  // Change cl300/dcp_range CCW -1 CW +1
-*/
+// Declare encoders.
+// DCP has 3 dual concentric rotary encoders (total 6 encoders).
+// There are two DCPs, Pilot (left) on A matrix, FO (right) on B matrix.
 
-// Declare FGP encoders
-// FGP has 5 regular encoders, and a scroll wheel
-Encoder4 fgp_p_crs(18, 2);  // R0A2 R1A2 Command sim/radios/obs_HSI_down *_up
-Encoder4 fgp_hdg(17, 1);    // R0A1 R1A1 Command sim/autopilot/heading_down *_up
-Encoder4 fgp_speed(16, 0);  // R0A0 R1A0 Command sim/autopilot/airspeed_down *_up
-Encoder4 fgp_alt(25, 9);    // R0B1 R1B1 Command cl300/autop/autop_alt_dial_dn *_up
-Encoder4 fgp_fo_crs(26, 10);  // R0B2 R1B2 Command sim/radios/obs_HSI_down *_up
+// DCP Pilot panel
+Encoder2 dcp_p_tune_outer(37,69); // Command xap/DCP/dcp_tune_left_coarse _right_coarse
+Encoder2 dcp_p_tune_inner(5,21); // Command xap/DCP/dcp_tune_left_fine _right_fine
+Encoder2 dcp_p_menu(36,68);   // Command xap/DCP/dcp_menu_left _right
+Encoder2 dcp_p_data(4,20);   // Command xap/DCP/dcp_data_left _right
+Encoder2 dcp_p_tilt(35,67);   // Change cl300/dcp_tilt CCW -1 CW +1 -1500 to 1500
+int tilt_value = 0;// fixme: initialise this by querying sim
+Encoder2 dcp_p_range(3,19);  // Change cl300/dcp_range CCW -1 CW +1 -150 to 150
+int range_value = 0;// fixme: initialise this by querying sim
 
-// Pitch wheel is two states per click
-Encoder2 fgp_pitch(8, 24);  // R0B0 R1B0 Command sim/autopilot/vertical_speed_up *_dn
+// DCP FO panel. Commands are exactly the same as DCP. Sim handles both sides
+// the same.
+Encoder2 dcp_fo_tune_outer(45,77);
+Encoder2 dcp_fo_tune_inner(13,29);
+Encoder2 dcp_fo_menu(44,76);
+Encoder2 dcp_fo_data(12,28);
+Encoder2 dcp_fo_tilt(43,75);
+Encoder2 dcp_fo_range(11,27);
 
-// Declare FO DCP encoders
-// Encoder bits are different, but actions are identical to Pilot DCP
-/*
-  Encoder dcp_fo_tune_outer(0,16,4); // xap/DCP/dcp_tune_left_coarse *_right_coarse
-  Encoder dcp_fo_tune_inner(1,17,4); // xap/DCP/dcp_tune_left_fine *_right_fine
-  Encoder dcp_fo_menu(0,16,4);  // Command xap/DCP/dcp_menu_left *_right
-  Encoder dcp_fo_data(1,17,4);  // Command xap/DCP/dcp_data_left *_right
-  Encoder dcp_fo_tilt(0,16,4);  // Change cl300/dcp_tilt CCW -1 CW +1
-  Encoder dcp_fo_range(1,17,4); // Change cl300/dcp_range CCW -1 CW +1
-*/
+// FGP has 5 regular encoders, and a scroll wheel.
+// Sim handles Pilot CRS knob and FO CRS knob the same.
+Encoder4 fgp_p_crs(18, 2);  // R0A2 R1A2 Command sim/radios/obs_HSI_down _up
+Encoder4 fgp_fo_crs(26, 10);  // R0B2 R1B2
+
+Encoder4 fgp_hdg(17, 1);    // R0A1 R1A1 Command sim/autopilot/heading_down _up
+Encoder4 fgp_speed(16, 0);  // R0A0 R1A0 Command sim/autopilot/airspeed_down _up
+Encoder4 fgp_alt(25, 9);    // R0B1 R1B1 Command cl300/autop/autop_alt_dial_dn _up
+
+// Pitch wheel is two states per click.
+Encoder2 fgp_pitch(8, 24);  // R0B0 R1B0 Command sim/autopilot/vertical_speed_up _dn
+
 
 // Declare buttons
-// MCP has one button
+// MCP has one button. Sim handles both sides as one input.
 // Pilot side
 Button p_warning_caution_clear(85);  // R5A5 Command sim/annuniciator/clear_master_warning *_caution
 // FO side
-Button fo_warning_caution_clear(93); // R5B5 Command sim/annuniciator/clear_master_warning *_caution
+Button fo_warning_caution_clear(93); // R5B5
+
 
 // FGP has 19 buttons, including 5 rotary pushbuttons
+// Sim handles Pilot FD button and FO FD button the same.
 Button fgp_p_fd(81);      // R5A1 Command sim/autopilot/fdir_toggle
 Button fgp_p_push_direct(49); // R3A1 Set cl300/crc_butt to 1, then zero
+Button fgp_fo_fd(89);     // R5B1
+Button fgp_fo_push_direct(57); // R3B1
 
 Button fgp_nav(80);       // R5A0 Command sim/autopilot/NAV
 Button fgp_btn_hdg(66);   // R4A2 Command sim/autopilot/heading
@@ -537,6 +534,9 @@ Button fgp_push_ias_mach(32);  // R2A0 Command sim/autopilot/knots_mach_toggle
 
 Button fgp_vs(72);        // R4B0 Command sim/autopilot/vertical_speed
 Button fgp_vnav(40);      // R2B0 Command sim/autopilot/FMS
+char vvi_status = 0;      // VS button changes mode in sim, which changes pitch wheel commands
+                          // Value can be 2 (VS mode) or 0 (PTCH mode)
+
 
 Button fgp_btn_alt(73);   // R4B1 Command sim/autopilot/altitude_hold
 Button fgp_push_cancel(41); // R2B1 ? Not present in sim
@@ -546,52 +546,59 @@ Button fgp_yd(88);        // R5B0 Command sim/systems/yaw_damper_toggle
 Button fgp_xfr(42);       // R2B2 Toggle cl300/autop_xfr_h
 bool xfr_value = false;   // fixme: initialise this by querying sim
 
-Button fgp_fo_fd(89);     // R5B1 Command sim/autopilot/fdir_toggle
-Button fgp_fo_push_direct(57); // R3B1 Set cl300/crc_butt to 1, then zero
 
 // Declare switches
 // FGP has one switch
-// Switch not implemented yet. However, this switch has only one state, so
+// Switch class not implemented yet. However, this switch has only one state, so
 // we can handle it as a button with only a 'pressed' action.
 Button fgp_ap_yd_disc(56);  // R3B0 Command sim/autopilot/servos_fdir_yawd_off
 
-// DCP has 13 buttons, including 3 rotary pushbuttons
-// There are two DCPs, one on A matrix, one on B matrix
-// fixme: DCP button bit numbers are incorrect
-// Pilot side
-/*
-  Button dcp_p_1_2(2);    // Toggle cl300/dcp_1_2
-  Button dcp_p_swap(3);   // Command xap/DCP/dcp_tune_stb
-  Button dcp_p_dme_h(4);  // Toggle cl300/dcp/dmeh
-  Button dcp_p_radio(4);  // Toggle cl300/mfd_sel_state_h
-  Button dcp_p_nav_src(4);  // Command cl300/DCP/navsrc_toggle
-  Button dcp_p_brg_src(4);  // Command cl300/DCP/brgsrc_toggle
-  Button dcp_p_select(4); // Command xap/DCP/dcp_data_sel
-  Button dcp_p_frmt(4);   // Cycle sim/cockpit/switches/EFIS_map_submode
-  Button dcp_p_refs(4);   // Cycle cl300/refspds
-  Button dcp_p_tfc(4);    // Toggle sim/cockpit/switches/EFIS_shows_tcas
-  Button dcp_p_radar(4);  // Toggle cl300/dcp_radar
-  Button dcp_p_tr_wx(4);  // Command cl300/tr_wx
-  Button dcp_p_push_auto(4);  // ?
-*/
-// FO side
-// Button bits are different, but actions are identical to Pilot DCP
-/*
-  Button dcp_fo_1_2(2);    // Toggle cl300/dcp_1_2
-  Button dcp_fo_swap(3);   // Command xap/DCP/dcp_tune_stb
-  Button dcp_fo_dme_h(4);  // Toggle cl300/dcp/dmeh
-  Button dcp_fo_radio(4);  // Toggle cl300/mfd_sel_state_h
-  Button dcp_fo_nav_src(4);  // Command cl300/DCP/navsrc_toggle
-  Button dcp_fo_brg_src(4);  // Command cl300/DCP/brgsrc_toggle
-  Button dcp_fo_select(4); // Command xap/DCP/dcp_data_sel
-  Button dcp_fo_frmt(4);   // Cycle sim/cockpit/switches/EFIS_map_submode
-  Button dcp_fo_refs(4);   // Cycle cl300/refspds
-  Button dcp_fo_tec(4);    // Toggle sim/cockpit/switches/EFIS_shows_tcas
-  Button dcp_fo_radar(4);  // Toggle cl300/dcp_radar
-  Button dcp_fo_tr_wx(4);  // Command cl300/tr_wx
-  Button dcp_fo_push_auto(4); // ?
-*/
 
+// DCP has 13 buttons, including 3 rotary pushbuttons
+// There are two identical DCPs, one on A matrix, one on B matrix
+
+// Pilot side
+
+Button dcp_p_1_2(70);    // Toggle cl300/dcp_1_2
+bool dcp_1_2_value = false;   // fixme: initialise this by querying sim
+
+Button dcp_p_swap(22);   // Command xap/DCP/dcp_tune_stb
+Button dcp_p_dme_h(6);  // Toggle cl300/dcp/dmeh
+bool dme_h_value = false; // fixme: initialise this by querying sim
+
+Button dcp_p_radio(38);  // Toggle cl300/mfd_sel_state_h
+bool radio_value = false; // fixme: initialise this by querying sim
+
+Button dcp_p_nav_src(86);  // Command cl300/DCP/navsrc_toggle
+Button dcp_p_brg_src(54);  // Command cl300/DCP/brgsrc_toggle
+Button dcp_p_select(53); // Command xap/DCP/dcp_data_sel
+Button dcp_p_frmt(84);   // Command sim/instruments/EFIS_mode_up
+Button dcp_p_refs(52);   // cl300/DCP/dcp_refs_button
+Button dcp_p_tfc(83);    // Toggle sim/cockpit/switches/EFIS_shows_tcas
+bool tfc_value = false; // fixme: initialise this by querying sim
+
+Button dcp_p_radar(51);  // Toggle cl300/dcp_radar
+bool radar_value = false; // fixme: initialise this by querying sim
+
+Button dcp_p_tr_wx(82);  // Command cl300/tr_wx
+Button dcp_p_push_auto(50);  // fixme: action unknown
+
+// FO side
+Button dcp_fo_1_2(78);
+Button dcp_fo_swap(30);
+Button dcp_fo_dme_h(14);
+Button dcp_fo_radio(46);
+Button dcp_fo_nav_src(94);
+Button dcp_fo_brg_src(62);
+Button dcp_fo_select(61);
+Button dcp_fo_frmt(92);
+Button dcp_fo_refs(60);
+Button dcp_fo_tfc(91);
+Button dcp_fo_radar(59);
+Button dcp_fo_tr_wx(90);
+Button dcp_fo_push_auto(58);
+
+// End encoders and buttons declaration
 
 //void printBin(uint16_t x) {
 //  for (int8_t i = 15; i >= 0; i--)
@@ -606,7 +613,7 @@ int sendUDP(uint16_t bytes) {
 }
 
 
-void subscribeDataref(const char* dataref, uint16_t freq_Hz, uint16_t index) {
+void subscribeDataref(const char* dataref, uint16_t freq_Hz, uint8_t index) {
   // Create and send UDP packet to subscribe to a dataref.
   // First argument is a PSTR()
   // e.g.
@@ -643,14 +650,19 @@ void writeDataref(const char* dataref, float val) {
   // General write dataref packet is of the form
   // "DREF\x00nnnnpath\to\dataref"
   // Where nnnn is a 32-bit float to be written to the dataref.
+  Serial.println(F("Clear packet buffer."));
   memset(packetBuffer, 0, sizeof(packetBuffer)); // Clear the packet buffer
   // Build the request in the packet buffer.
+  Serial.println(F("Build packet buffer."));
   strcpy_P(packetBuffer, PSTR("DREF"));
   memcpy(packetBuffer + 5, &val, sizeof(val));
+  Serial.println(F("Copy dataref."));
   strcpy_P(packetBuffer + 9, dataref);
+  Serial.println(F("Send."));
   if (!debug) {
     sendUDP(509); // Dataref packet is 509 bytes.
   }
+  Serial.println(F("Done."));
 }
 
 
@@ -685,7 +697,7 @@ void setup() {
     ; // wait for serial port to connect. Needed for native USB port only
   }
   Serial.println();
-  Serial.println(F("Challenger 300 Glare Shield Interface v0.1"));
+  Serial.println(F("Challenger 300 Glare Shield Interface v0.3"));
 
   // Test switch input pin
   pinMode(test_button_pin, INPUT_PULLUP);
@@ -703,12 +715,36 @@ if (!debug) {
   Serial.println(F("Setting up Ethernet. Waiting for DHCP."));
   Ethernet.begin(mac);
 
+  Serial.print(F("IP address: "));
+  Serial.println(Ethernet.localIP());
+
+  Serial.println(F("Listening for multicast beacon."));
+  udp.beginMulticast(BECN_ip, BECN_port);
+
+  while (true){
+    int packetSize = udp.parsePacket();
+    if (packetSize){
+      Serial.print("Received packet of size ");
+      Serial.println(packetSize);
+      udp.read(packetBuffer, packetSize);
+
+      if (strncmp(packetBuffer, "BECN\x00", 5) == 0) {
+        Serial.println(F("Packet is BECN."));
+        Serial.println(F("X-Plane IP"));
+        Serial.print(udp.remoteIP());
+        xplane_ip = udp.remoteIP();
+        // We have the address, break out. Otherwise loop forever, because we
+        // don't know the address of X-Plane
+        break;
+      }
+    }
+    delay(10);
+  }
+
   // start UDP
   udp.begin(localPort);
 
-  Serial.print(F("IP address: "));
-  Serial.println(Ethernet.localIP());
-  }
+  } // debug
   
   // Set up MCP23017
   // MCP23017 is used for column inputs in the switch matrix
@@ -735,52 +771,55 @@ if (!debug) {
   // 1ms interrupt will set this flag, so we know it's time to scan the matrix.
   scan_matrix = false;
 
-  // Power-on test
-  Serial.println(F("Self test."));
+  // Power-on test if button pressed
+  if (!digitalRead(test_button_pin)){
 
-  // Fade up Zone 1 lighting then Zone 3 lighting
-  Serial.println(F("Fade up Zone 1"));
-  for (uint8_t i = 0; i < 255; i++) {
-    analogWrite(zone1_lighting_pin, i);
-    delay(5);
+    Serial.println(F("Self test."));
+  
+    // Fade up Zone 1 lighting then Zone 3 lighting
+    Serial.println(F("Fade up Zone 1"));
+    for (uint8_t i = 0; i < 255; i++) {
+      analogWrite(zone1_lighting_pin, i);
+      delay(5);
+    }
+  
+    Serial.println(F("Fade up Zone 3"));
+    for (uint8_t i = 0; i < 255; i++) {
+      analogWrite(zone3_lighting_pin, i);
+      delay(5);
+    }
+  
+    // Fade up WARNING then CAUTION LEDs
+    Serial.println(F("Fade up WARNING"));
+    for (uint8_t i = 0; i < 255; i++) {
+      analogWrite(warning_LED_pin, i);
+      delay(5);
+    }
+  
+    Serial.println(F("Fade up CAUTION"));
+    for (uint8_t i = 0; i < 255; i++) {
+      analogWrite(caution_LED_pin, i);
+      delay(5);
+    }
+  
+    // Fade everything down
+    Serial.println(F("Fade down"));
+    for (uint8_t i = 255; i > 0; i--) {
+      analogWrite(zone1_lighting_pin, i - 1);
+      analogWrite(zone3_lighting_pin, i - 1);
+      analogWrite(warning_LED_pin, i - 1);
+      analogWrite(caution_LED_pin, i - 1);
+      delay(5);
+    }
+  
+  
+    // Reset lighting to 5%
+    analogWrite(zone1_lighting_pin, 13);
+    analogWrite(zone3_lighting_pin, 13);
+    delay(500);
+  
+    Serial.println(F("Self test done."));
   }
-
-  Serial.println(F("Fade up Zone 3"));
-  for (uint8_t i = 0; i < 255; i++) {
-    analogWrite(zone3_lighting_pin, i);
-    delay(5);
-  }
-
-  // Fade up WARNING then CAUTION LEDs
-  Serial.println(F("Fade up WARNING"));
-  for (uint8_t i = 0; i < 255; i++) {
-    analogWrite(warning_LED_pin, i);
-    delay(5);
-  }
-
-  Serial.println(F("Fade up CAUTION"));
-  for (uint8_t i = 0; i < 255; i++) {
-    analogWrite(caution_LED_pin, i);
-    delay(5);
-  }
-
-  // Fade everything down
-  Serial.println(F("Fade down"));
-  for (uint8_t i = 255; i > 0; i--) {
-    analogWrite(zone1_lighting_pin, i - 1);
-    analogWrite(zone3_lighting_pin, i - 1);
-    analogWrite(warning_LED_pin, i - 1);
-    analogWrite(caution_LED_pin, i - 1);
-    delay(5);
-  }
-
-
-  // Reset lighting to 5%
-  analogWrite(zone1_lighting_pin, 13);
-  analogWrite(zone3_lighting_pin, 13);
-  delay(500);
-
-  Serial.println(F("Self test done."));
 
   // Unsubscribe in case we have been reset.
   Serial.println(F("Unsubscribing from datarefs."));
@@ -798,12 +837,17 @@ if (!debug) {
   subscribeDataref(PSTR("cl300/mast_caut"), 20 , 0x02);
 
   // Subscribe to gshldl, five times per second, with an index of 0x03.
-  // This will be Zone1 lighting
+  // This will be Zone1
   subscribeDataref(PSTR("cl300/gshldl"), 5, 0x03);
 
   // Subscribe to gshldr, five times per second, with an index of 0x04.
-  // This will be Zone3 lighting
+  // This will be Zone3
   subscribeDataref(PSTR("cl300/gshldr"), 5, 0x04);
+
+  // Subscribe to vvi_status, two times per second, with an index of 0x05.
+  // This will be used internally to change what the Pitch Wheel does.
+  subscribeDataref(PSTR("sim/cockpit2/autopilot/vvi_status"), 2, 0x05);
+
 
   fast_tick_start_millis = millis();
   slow_tick_start_millis = millis();
@@ -827,7 +871,7 @@ void loop() {
   // Test button can be used for various things. True if pressed.
   test_button_pressed = (!digitalRead(test_button_pin));
   if (test_button_pressed != old_test_button_pressed) {
-    Serial.println((test_button_pressed)?"Test button pressed":"Test button released");
+    Serial.println((test_button_pressed)?F("Test button pressed"):F("Test button released"));
     old_test_button_pressed = test_button_pressed;
   }
 
@@ -836,22 +880,21 @@ void loop() {
   if (slow_tick_current_millis - slow_tick_start_millis >= slow_tick_period) {
     // We are on a 1-second boundary
     // Do something useful
-    //Serial.print(F("  Foo: "));
-    //Serial.println(alt_knob.getValue());
-    //Serial.print(F("Pitch: "));
-    //Serial.println(pitch_wheel.getValue());
-    //Serial.print(".");
-    Serial.println("B A0 B A1 B A2 B A3 B A4 B A5");
+    Serial.println(F("B A0 B A1 B A2 B A3 B A4 B A5"));
     for (uint8_t i = 0; i < (sizeof rows / sizeof rows[0]); i++) {
       Serial.print(cur_matrix[i], HEX);
-      Serial.print(' ');
+      Serial.print(F(" "));
     }
     Serial.println();
     for (uint8_t i = 0; i < (sizeof rows / sizeof rows[0]); i++) {
       Serial.print(prev_matrix[i], HEX);
-      Serial.print(' ');
+      Serial.print(F(" "));
     }
     Serial.println();
+
+    // A0 is now available
+    Serial.print(F("A0: "));
+    Serial.println(analogRead(A0));
 
     // Reset the timer
     slow_tick_start_millis = slow_tick_current_millis;
@@ -861,16 +904,7 @@ void loop() {
   fast_tick_current_millis = millis();
   if (fast_tick_current_millis - fast_tick_start_millis >= fast_tick_period) {
     // We are on a 0.1-second boundary
-    // Let's look at the analog inputs
-    // Testing analog inputs
-    //pot_value = analogRead(zone_1_pot);
-    //pot_value = analogRead(zone_1_pot);
-    //Serial.print("Pot raw: ");
-    //Serial.println(pot_value);
-    //zone_1_brightness = pot_value / 4;
-    //pot_value = analogRead(zone_3_pot);
-    //zone_3_brightness = pot_value / 4;
-    //writeDataref(PSTR("cl300/gshldl_h"),pot_value/1023.0);
+    // Nothing to do in this version.
 
     // Reset the timer
     fast_tick_start_millis = fast_tick_current_millis;
@@ -964,6 +998,11 @@ void loop() {
             brightness = out * 255.0;
             brightness = constrain(brightness, 0, 255);
             analogWrite(zone3_lighting_pin, brightness);
+            break;
+          case 5: // vvi_status
+            //Serial.print(F("vvi_status : "));
+            //Serial.println(out);
+            vvi_status = out; // Should be 2 or 0
             break;
           default:
             // The packet doesn't contain any indexes we handle.
@@ -1140,12 +1179,30 @@ void loop() {
 
     fgp_pitch.tick();
     if (fgp_pitch.delta == 1) {
-      Serial.println(F("FGP Pitch Wheel UP"));
-      sendCommand(PSTR("sim/autopilot/vertical_speed_up"));
+      if (vvi_status){
+        // vvi_status is not zero
+        Serial.println(F("FGP Pitch Wheel UP. vvi_status not zero (VS)."));
+        sendCommand(PSTR("sim/autopilot/vertical_speed_up"));
+      }
+      else
+      {
+        // vvi_status is zero
+        Serial.println(F("FGP Pitch Wheel UP. vvi_status is zero (PTCH)."));
+        sendCommand(PSTR("sim/autopilot/nose_up_pitch_mode"));
+      }
     }
     else if (fgp_pitch.delta == -1) {
-      Serial.println(F("FGP Pitch Wheel DOWN"));
-      sendCommand(PSTR("sim/autopilot/vertical_speed_down"));
+      if (vvi_status){
+        // vvi_status is not zero
+        Serial.println(F("FGP Pitch Wheel DOWN. vvi_status not zero (VS)."));
+        sendCommand(PSTR("sim/autopilot/vertical_speed_down"));
+      }
+      else
+      {
+        // vvi_status is zero
+        Serial.println(F("FGP Pitch Wheel DOWN. vvi_status is zero (PTCH)."));
+        sendCommand(PSTR("sim/autopilot/nose_down_pitch_mode"));        
+      }
     }
 
 
@@ -1166,7 +1223,7 @@ void loop() {
       sendCommand(PSTR("cl300/autop/autop_alt_dial_up"));
     }
     else if (fgp_alt.delta == -1) {
-      Serial.println(F("FGP ALT CRS -ve"));
+      Serial.println(F("FGP ALT -ve"));
       sendCommand(PSTR("cl300/autop/autop_alt_dial_dn"));
     }
 
@@ -1197,6 +1254,180 @@ void loop() {
       sendCommand(PSTR("sim/autopilot/servos_fdir_yawd_off"));
     }
 
+
+  // DCP Encoders (Pilot and FO)
+
+    dcp_p_tune_outer.tick();
+    dcp_fo_tune_outer.tick();    
+    if (dcp_p_tune_outer.delta == 1 || dcp_fo_tune_outer.delta == 1) {
+      Serial.println(F("DCP TUNE COARSE +ve"));
+      sendCommand(PSTR("xap/DCP/dcp_tune_right_coarse"));
+    }
+    else if (dcp_p_tune_outer.delta == -1 || dcp_fo_tune_outer.delta == -1) {
+      Serial.println(F("DCP TUNE COARSE -ve"));
+      sendCommand(PSTR("xap/DCP/dcp_tune_left_coarse"));
+    }
+
+    dcp_p_tune_inner.tick();
+    dcp_fo_tune_inner.tick();    
+    if (dcp_p_tune_inner.delta == 1 || dcp_fo_tune_inner.delta == 1) {
+      Serial.println(F("DCP TUNE FINE +ve"));
+      sendCommand(PSTR("xap/DCP/dcp_tune_right_fine"));
+    }
+    else if (dcp_p_tune_inner.delta == -1 || dcp_fo_tune_inner.delta == -1) {
+      Serial.println(F("DCP TUNE FINE -ve"));
+      sendCommand(PSTR("xap/DCP/dcp_tune_left_fine"));
+    }
+
+    dcp_p_menu.tick();
+    dcp_fo_menu.tick();    
+    if (dcp_p_menu.delta == 1 || dcp_fo_menu.delta == 1) {
+      Serial.println(F("DCP MENU +ve"));
+      sendCommand(PSTR("xap/DCP/dcp_menu_right"));
+    }
+    else if (dcp_p_menu.delta == -1 || dcp_fo_menu.delta == -1) {
+      Serial.println(F("DCP MENU -ve"));
+      sendCommand(PSTR("xap/DCP/dcp_menu_left"));
+    }
+
+    dcp_p_data.tick();
+    dcp_fo_data.tick();    
+    if (dcp_p_data.delta == 1 || dcp_fo_data.delta == 1) {
+      Serial.println(F("DCP DATA +ve"));
+      sendCommand(PSTR("xap/DCP/dcp_data_right"));
+    }
+    else if (dcp_p_data.delta == -1 || dcp_fo_data.delta == -1) {
+      Serial.println(F("DCP DATA -ve"));
+      sendCommand(PSTR("xap/DCP/dcp_data_left"));
+    }
+
+    dcp_p_tilt.tick();
+    dcp_fo_tilt.tick();    
+    if (dcp_p_tilt.delta == 1 || dcp_fo_tilt.delta == 1) {
+      Serial.println(F("DCP TILT +ve"));
+      tilt_value = tilt_value < 1500 ? tilt_value+1 : 0;
+      writeDataref(PSTR("cl300/dcp_tilt"), tilt_value);
+    }
+    else if (dcp_p_tilt.delta == -1 || dcp_fo_tilt.delta == -1) {
+      Serial.println(F("DCP TILT -ve"));
+      tilt_value = tilt_value > -1500 ? tilt_value-1 : 0;
+      writeDataref(PSTR("cl300/dcp_tilt"), tilt_value);
+    }
+
+    dcp_p_range.tick();
+    dcp_fo_range.tick();
+    if (dcp_p_range.delta == 1 || dcp_fo_range.delta == 1) {
+      Serial.println(F("DCP RANGE +ve"));
+      range_value = range_value < 150 ? range_value+1 : 0;
+      writeDataref(PSTR("cl300/dcp_range"), range_value);
+    }
+    else if (dcp_p_range.delta == -1 || dcp_fo_range.delta == -1) {
+      Serial.println(F("DCP RANGE -ve"));
+      range_value = range_value > -150 ? range_value-1 : 0;
+      writeDataref(PSTR("cl300/dcp_range"), range_value);
+    }
+
+
+
+  // DCP buttons
+
+    dcp_p_1_2.tick();
+    dcp_fo_1_2.tick();
+    if (dcp_p_1_2.delta == 1 || dcp_fo_1_2.delta == 1) {
+      Serial.println(F("DCP 1/2 pressed"));
+      dcp_1_2_value = !dcp_1_2_value;
+      writeDataref(PSTR("cl300/dcp_1_2"), dcp_1_2_value?1:0);
+    }
+    
+    dcp_p_swap.tick();
+    dcp_fo_swap.tick();
+    if (dcp_p_swap.delta == 1 || dcp_fo_swap.delta == 1) {
+      Serial.println(F("DCP SWAP pressed"));
+      sendCommand(PSTR("xap/DCP/dcp_tune_stb"));
+    }
+
+    dcp_p_dme_h.tick();
+    dcp_fo_dme_h.tick();
+    if (dcp_p_dme_h.delta == 1 || dcp_fo_dme_h.delta == 1) {
+      Serial.println(F("DCP DME H pressed"));
+      dme_h_value = !dme_h_value;
+      writeDataref(PSTR("cl300/dcp/dmeh"), dme_h_value?1:0);
+    }
+
+    dcp_p_radio.tick();
+    dcp_fo_radio.tick();
+    if (dcp_p_radio.delta == 1 || dcp_fo_radio.delta == 1) {
+      Serial.println(F("DCP RADIO pressed"));
+      radio_value = !radio_value;
+      writeDataref(PSTR("cl300/mfd_sel_state_h"), radio_value?1:0);
+    }
+
+    dcp_p_nav_src.tick();
+    dcp_fo_nav_src.tick();
+    if (dcp_p_nav_src.delta == 1 || dcp_fo_nav_src.delta == 1) {
+      Serial.println(F("DCP NAV SRC pressed"));
+      sendCommand(PSTR("cl300/DCP/navsrc_toggle"));
+    }
+
+    dcp_p_brg_src.tick();
+    dcp_fo_brg_src.tick();
+    if (dcp_p_brg_src.delta == 1 || dcp_fo_brg_src.delta == 1) {
+      Serial.println(F("DCP BRG SRC pressed"));
+      sendCommand(PSTR("cl300/DCP/brgsrc_toggle"));
+    }
+
+    dcp_p_select.tick();
+    dcp_fo_select.tick();
+    if (dcp_p_select.delta == 1 || dcp_fo_select.delta == 1) {
+      Serial.println(F("DCP SELECT pressed"));
+      sendCommand(PSTR("cl300/DCP/dcp_data_sel"));
+    }
+
+    dcp_p_frmt.tick();
+    dcp_fo_frmt.tick();
+    if (dcp_p_frmt.delta == 1 || dcp_fo_frmt.delta == 1) {
+      Serial.println(F("DCP FRMT pressed"));
+      sendCommand(PSTR("sim/instruments/EFIS_mode_up"));
+    }
+
+    dcp_p_refs.tick();
+    dcp_fo_refs.tick();
+    if (dcp_p_refs.delta == 1 || dcp_fo_refs.delta == 1) {
+      Serial.println(F("DCP REFS pressed"));
+      sendCommand(PSTR("cl300/DCP/dcp_refs_button"));
+    }
+
+
+    dcp_p_tfc.tick();
+    dcp_fo_tfc.tick();
+    if (dcp_p_tfc.delta == 1 || dcp_fo_tfc.delta == 1) {
+      Serial.println(F("DCP TFC pressed"));
+      tfc_value = !tfc_value;
+      writeDataref(PSTR("sim/cockpit/switches/EFIS_shows_tcas"), tfc_value?1:0);
+    }
+
+    dcp_p_radar.tick();
+    dcp_fo_radar.tick();
+    if (dcp_p_radar.delta == 1 || dcp_fo_radar.delta == 1) {
+      Serial.println(F("DCP RADAR pressed"));
+      radar_value = !radar_value;
+      writeDataref(PSTR("cl300/scp_radar"), tfc_value?1:0);
+    }
+
+    dcp_p_tr_wx.tick();
+    dcp_fo_tr_wx.tick();
+    if (dcp_p_tr_wx.delta == 1 || dcp_fo_tr_wx.delta == 1) {
+      Serial.println(F("DCP TR WX pressed"));
+      sendCommand(PSTR("cl300/tr_wx"));
+    }
+
+  // fixme: action unknown for this button
+    dcp_p_push_auto.tick();
+    dcp_fo_push_auto.tick();
+    if (dcp_p_push_auto.delta == 1 || dcp_fo_push_auto.delta == 1) {
+      Serial.println(F("DCP PUSH AUTO pressed (fixme: unknown action)"));
+      //sendCommand(PSTR(""));
+    }
 
   } // if (scan_matrix)
 
