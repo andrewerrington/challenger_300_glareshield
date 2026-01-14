@@ -1014,8 +1014,8 @@ void loop() {
             vvi_status = out; // Should be 2 or 0
             break;
           case 0x06: // autopilot_mode
-            Serial.print(F("autopilot_mode : "));
-            Serial.println(out);
+            //Serial.print(F("autopilot_mode : "));
+            //Serial.println(out);
             ap_mode = out; // Should be 0, 1, or 2
             break;
           default:
