@@ -5,7 +5,7 @@
 
    v0.2 26 Apr 2025 - Modified for new schematic, which allows A0 to be used.
    v0.3 16 Jul 2025 - Corrected operation of pitch wheel in VS and PTCH mode.
-   v0.4 14 Jan 2026 - Corrected operation of AP button based on AP mode
+   v0.4 17 Jan 2026 - Corrected operation of AP button
 
    This code is to interface switches and indicators on the Challenger 300
    glare shield panel to X-Plane. We use a Wiznet W5500 Ethernet module
@@ -55,11 +55,10 @@
 // 34567890123456789012345678901234567890123456789012345678901234567890123456789
 
 // Support for Wiznet W5500 Ethernet module (now uses Ethernet_Generic library)
-#include <Ethernet_Generic.h>	// Tested v2.8.1
+#include <Ethernet_Generic.h> // Tested v2.8.1
 
 // Ethernet MAC address, must be unique for all devices on network.
 byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
-
 
 // This code uses DHCP. Your network should assign an IP address to this unit.
 // Alternatively, check the Arduino Ethernet examples to show how to set a
@@ -88,7 +87,7 @@ char packetBuffer[512];
 
 // Support for MCP20317 I2C GPIO Expander
 #include <Wire.h>
-#include <MCP23017.h>	// Tested v2.0.0
+#include <MCP23017.h> // Tested v2.0.0
 
 // Default MCP23017 address
 #define MCP23017_ADDR 0x20
@@ -542,8 +541,6 @@ Button fgp_btn_alt(73);   // R4B1 Command sim/autopilot/altitude_hold
 Button fgp_push_cancel(41); // R2B1 ? Not present in sim
 
 Button fgp_ap(74);        // R4B2 Command sim/autopilot/servos_toggle & fdir_servos_toggle & autothrottle_off?
-char ap_mode = 0;         // AP button changes mode in sim, which changes AP button commands
-
 Button fgp_yd(88);        // R5B0 Command sim/systems/yaw_damper_toggle
 Button fgp_xfr(42);       // R2B2 Toggle cl300/autop_xfr_h
 bool xfr_value = false;   // fixme: initialise this by querying sim
@@ -830,7 +827,7 @@ if (!debug) {
   subscribeDataref(PSTR("cl300/gshldl"), 0, 0x03);
   subscribeDataref(PSTR("cl300/gshldr"), 0, 0x04);
   subscribeDataref(PSTR("sim/cockpit2/autopilot/vvi_status"), 0, 0x05);
-  subscribeDataref(PSTR("sim/cockpit/autopilot/autopilot_mode"), 0, 0x06);
+
 
   Serial.println(F("Subscribing to datarefs."));
 
@@ -852,9 +849,6 @@ if (!debug) {
   // This will be used internally to change what the Pitch Wheel does.
   subscribeDataref(PSTR("sim/cockpit2/autopilot/vvi_status"), 4, 0x05);
 
-  // Subscribe to autopilot_mode, four times per second, with an index of 0x06.
-  // This will be used internally for the AP button.
-  subscribeDataref(PSTR("sim/cockpit/autopilot/autopilot_mode"), 4, 0x06);
 
   fast_tick_start_millis = millis();
   slow_tick_start_millis = millis();
@@ -974,25 +968,23 @@ void loop() {
         // Index 2 is Caution
         // Index 3 is Zone 1 brightness
         // Index 4 is Zone 3 brightness
-        // Index 5 is vvi status
-        // Index 6 is autopilot mode
 
         switch (packetBuffer[i]) {
-          case 0x01: // WARNING indicator
+          case 1: // WARNING indicator
             //Serial.print(F("Warning: "));
             //Serial.println(out);
             brightness = out * 255.0;
             brightness = constrain(brightness, 0, 255);
             analogWrite(warning_LED_pin, brightness);
             break;
-          case 0x02: // CAUTION indicator
+          case 2: // CAUTION indicator
             //Serial.print(F("Caution: "));
             //Serial.println(out);
             brightness = out * 255.0;
             brightness = constrain(brightness, 0, 255);
             analogWrite(caution_LED_pin, brightness);
             break;
-          case 0x03: // Zone 1 lighting
+          case 3: // Zone 1 lighting
             //Serial.print(F("Zone 1 : "));
             //Serial.print(out);
             brightness = out * 255.0;
@@ -1001,22 +993,17 @@ void loop() {
             //Serial.print(F(" "));
             //Serial.println(brightness);
             break;
-          case 0x04: // Zone 3 lighting
+          case 4: // Zone 3 lighting
             //Serial.print(F("Zone 3 : "));
             //Serial.println(out);
             brightness = out * 255.0;
             brightness = constrain(brightness, 0, 255);
             analogWrite(zone3_lighting_pin, brightness);
             break;
-          case 0x05: // vvi_status
+          case 5: // vvi_status
             //Serial.print(F("vvi_status : "));
             //Serial.println(out);
             vvi_status = out; // Should be 2 or 0
-            break;
-          case 0x06: // autopilot_mode
-            //Serial.print(F("autopilot_mode : "));
-            //Serial.println(out);
-            ap_mode = out; // Should be 0, 1, or 2
             break;
           default:
             // The packet doesn't contain any indexes we handle.
@@ -1071,8 +1058,7 @@ void loop() {
 
     // Buttons/knobs are handled in groups from left to right.
     
-    // There are two FD buttons at either end of the FGP.
-    // Pressing either one performs the same action.
+    // There are two FD buttons at either end of the FGP
     fgp_p_fd.tick();
     fgp_fo_fd.tick();
     if (fgp_p_fd.delta == 1 || fgp_fo_fd.delta == 1) {
@@ -1245,12 +1231,7 @@ void loop() {
     fgp_ap.tick();
     if (fgp_ap.delta == 1) {
       Serial.println(F("FGP AP pressed"));
-      // Toggle servos and fdir_servos. If ap_mode is 2 turn off auto_throttle.
       sendCommand(PSTR("sim/autopilot/servos_toggle"));
-      sendCommand(PSTR("sim/autopilot/fdir_servos_toggle"));
-      if (ap_mode==2){
-      sendCommand(PSTR("sim/autopilot/autothrottle_off"));
-      }
     }
 
     fgp_yd.tick();
